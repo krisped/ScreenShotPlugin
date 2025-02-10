@@ -1,49 +1,25 @@
 package com.example;
 
-import net.runelite.client.config.Config;
-import net.runelite.client.config.ConfigGroup;
-import net.runelite.client.config.ConfigItem;
+import net.runelite.client.config.*;
 
 @ConfigGroup("testplugin")
-public interface TestConfig extends Config
-{
+public interface TestConfig extends Config {
+
     @ConfigItem(
-            keyName = "debugWidgetSpawns",
-            name = "Debug Widget Spawns",
-            description = "Log all widget spawns to chat and overlay"
+            keyName = "showSmiteDrain",
+            name = "Show Smite Drain",
+            description = "Toggle to show the total smited prayer on screen."
     )
-    default boolean debugWidgetSpawns()
-    {
-        return false;
+    default boolean showSmiteDrain() {
+        return true;
     }
 
     @ConfigItem(
-            keyName = "screenshotWidget",
-            name = "Screenshot Widget",
-            description = "Take a screenshot when a specific widget ID spawns"
+            keyName = "overlayDisplayDuration",
+            name = "Overlay Duration",
+            description = "How long the opponent info should be displayed after combat (in seconds)."
     )
-    default boolean screenshotWidget()
-    {
-        return false;
-    }
-
-    @ConfigItem(
-            keyName = "screenshotWidgetId",
-            name = "Screenshot Widget ID",
-            description = "The widget ID to trigger screenshot"
-    )
-    default int screenshotWidgetId()
-    {
-        return -1;
-    }
-
-    @ConfigItem(
-            keyName = "webhookUrl",
-            name = "Discord Webhook URL",
-            description = "Set webhook URL to send widget messages and screenshots to Discord"
-    )
-    default String webhookUrl()
-    {
-        return "";
+    default int overlayDisplayDuration() {
+        return 10;
     }
 }

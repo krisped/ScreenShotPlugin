@@ -1,34 +1,33 @@
 package com.example;
 
 import com.google.inject.Provides;
+import java.awt.Color;
+import java.text.DecimalFormat;
+import java.time.Duration;
+import java.time.Instant;
 import javax.inject.Inject;
-import lombok.extern.slf4j.Slf4j;
-import net.runelite.api.Client;
-import net.runelite.api.ChatMessageType;
-import net.runelite.api.events.GameTick;
-import net.runelite.api.events.WidgetLoaded;
+import lombok.AccessLevel;
+import lombok.Getter;
+import net.runelite.api.*;
+import net.runelite.api.events.*;
+import net.runelite.api.widgets.ComponentID;
 import net.runelite.client.config.ConfigManager;
+import net.runelite.client.eventbus.EventBus;
 import net.runelite.client.eventbus.Subscribe;
+import net.runelite.client.hiscore.HiscoreEndpoint;
 import net.runelite.client.plugins.Plugin;
 import net.runelite.client.plugins.PluginDescriptor;
 import net.runelite.client.ui.overlay.OverlayManager;
 
-import javax.imageio.ImageIO;
-import java.awt.*;
-import java.awt.image.BufferedImage;
-import java.io.ByteArrayOutputStream;
-import java.io.OutputStream;
-import java.net.HttpURLConnection;
-import java.net.URL;
-
-@Slf4j
 @PluginDescriptor(
-        name = "[KP] TEST",
-        description = "Viser widget spawn ID, debug-modus, skjermbilde og sender til Discord",
-        tags = {"widget", "test", "overlay", "discord", "screenshot"}
+        name = "Test Plugin",
+        description = "Viser informasjon om motstanderen i kamp",
+        tags = {"combat", "health", "hitpoints", "overlay"}
 )
-public class TestPlugin extends Plugin
-{
+public class TestPlugin extends Plugin {
+
+    private static final DecimalFormat PERCENT_FORMAT = new DecimalFormat("0.0");
+
     @Inject
     private Client client;
 
@@ -39,150 +38,86 @@ public class TestPlugin extends Plugin
     private OverlayManager overlayManager;
 
     @Inject
-    private TestOverlay testOverlay;
+    private TestOverlay overlay;
 
-    private int lastWidgetId = -1;
-    private int screenshotDelayTicks = 0; // Antall ticks til skjermbilde tas
-    private int delayedWidgetId = -1; // Widget ID som venter på skjermbilde
+    @Inject
+    private EventBus eventBus;
+
+    @Getter(AccessLevel.PACKAGE)
+    private HiscoreEndpoint hiscoreEndpoint = HiscoreEndpoint.NORMAL;
+
+    @Getter(AccessLevel.PACKAGE)
+    private Instant lastTime;
+
+    private Actor lastOpponent;
+    private Hitsplat lastHitsplat;
+    private int smitedPrayer = 0;
+
+    public int getSmitedPrayer() {
+        return smitedPrayer;
+    }
 
     @Provides
-    TestConfig provideConfig(ConfigManager configManager)
-    {
+    TestConfig provideConfig(ConfigManager configManager) {
         return configManager.getConfig(TestConfig.class);
     }
 
     @Override
-    protected void startUp() throws Exception
-    {
-        overlayManager.add(testOverlay);
-        log.info("[KP] TEST Plugin started!");
+    protected void startUp() throws Exception {
+        overlayManager.add(overlay);
+        eventBus.register(this);
     }
 
     @Override
-    protected void shutDown() throws Exception
-    {
-        overlayManager.remove(testOverlay);
-        log.info("[KP] TEST Plugin stopped!");
+    protected void shutDown() throws Exception {
+        overlayManager.remove(overlay);
+        eventBus.unregister(this);
+        lastOpponent = null;
+        lastTime = null;
     }
 
     @Subscribe
-    public void onWidgetLoaded(WidgetLoaded event)
-    {
-        int widgetId = event.getGroupId();
-        lastWidgetId = widgetId;
-
-        if (config.debugWidgetSpawns())
-        {
-            String debugMessage = "Widget spawned: " + widgetId;
-            client.addChatMessage(ChatMessageType.GAMEMESSAGE, "", debugMessage, null);
-            testOverlay.addMessage(debugMessage);
+    public void onInteractingChanged(InteractingChanged event) {
+        if (event.getSource() != client.getLocalPlayer()) {
+            return;
         }
-
-        // Sjekk om widget-ID samsvarer med screenshot-widget-ID
-        if (config.screenshotWidget() && widgetId == config.screenshotWidgetId())
-        {
-            delayedWidgetId = widgetId; // Lagre widget-ID
-            screenshotDelayTicks = 2; // Sett en forsinkelse på 2 ticks
+        Actor target = event.getTarget();
+        if (target != null && target != lastOpponent) {
+            smitedPrayer = 0;
         }
-
-        log.info("Detected Widget: " + widgetId);
+        lastOpponent = target;
     }
 
     @Subscribe
-    public void onGameTick(GameTick event)
-    {
-        if (screenshotDelayTicks > 0)
-        {
-            screenshotDelayTicks--;
-            if (screenshotDelayTicks == 0 && delayedWidgetId != -1)
-            {
-                takeScreenshotAndSendToDiscord(delayedWidgetId);
-                delayedWidgetId = -1; // Tilbakestill forsinkelsen
+    public void onHitsplatApplied(HitsplatApplied event) {
+        if (!client.isPrayerActive(Prayer.SMITE)) {
+            return;
+        }
+        if (event.getActor() != lastOpponent || event.getHitsplat() == lastHitsplat) {
+            return;
+        }
+        lastHitsplat = event.getHitsplat();
+
+        int damage = event.getHitsplat().getAmount();
+        int drain = damage / 4;
+        if (drain > 0) {
+            smitedPrayer += drain;
+            System.out.println("Damage: " + damage + ", Drain: " + drain + ", Total Smited Prayer: " + smitedPrayer);
+        }
+    }
+
+    @Subscribe
+    public void onGameTick(GameTick gameTick) {
+        if (lastOpponent != null && lastTime != null && client.getLocalPlayer().getInteracting() == null) {
+            if (Duration.between(lastTime, Instant.now()).toSeconds() > config.overlayDisplayDuration()) {
+                lastOpponent = null;
+                smitedPrayer = 0;
             }
         }
     }
 
-    private void takeScreenshotAndSendToDiscord(int widgetId)
-    {
-        try
-        {
-            BufferedImage screenshot = takeScreenshot();
-            if (screenshot != null)
-            {
-                String webhookUrl = config.webhookUrl();
-                if (webhookUrl != null && !webhookUrl.isEmpty())
-                {
-                    sendScreenshotToDiscord(webhookUrl, screenshot, "Widget ID: " + widgetId + " Screenshot");
-                }
-            }
-        }
-        catch (Exception e)
-        {
-            log.error("Failed to capture and send screenshot", e);
-        }
-    }
-
-    private BufferedImage takeScreenshot()
-    {
-        try
-        {
-            // Finn klientens posisjon på skjermen
-            Point location = client.getCanvas().getLocationOnScreen();
-            int width = client.getCanvas().getWidth();
-            int height = client.getCanvas().getHeight();
-
-            // Bruk Robot til å fange innholdet
-            Robot robot = new Robot();
-            Rectangle captureArea = new Rectangle(location.x, location.y, width, height);
-            return robot.createScreenCapture(captureArea);
-        }
-        catch (Exception e)
-        {
-            log.error("Failed to capture screenshot", e);
-            return null;
-        }
-    }
-
-    private void sendScreenshotToDiscord(String webhookUrl, BufferedImage image, String message)
-    {
-        try
-        {
-            URL url = new URL(webhookUrl);
-            HttpURLConnection connection = (HttpURLConnection) url.openConnection();
-            connection.setDoOutput(true);
-            connection.setRequestMethod("POST");
-            connection.setRequestProperty("Content-Type", "multipart/form-data; boundary=----Boundary");
-
-            String boundary = "----Boundary";
-            ByteArrayOutputStream imageStream = new ByteArrayOutputStream();
-            ImageIO.write(image, "png", imageStream);
-            byte[] imageBytes = imageStream.toByteArray();
-
-            StringBuilder payload = new StringBuilder();
-            payload.append("--").append(boundary).append("\r\n")
-                    .append("Content-Disposition: form-data; name=\"content\"\r\n\r\n")
-                    .append(message).append("\r\n")
-                    .append("--").append(boundary).append("\r\n")
-                    .append("Content-Disposition: form-data; name=\"file\"; filename=\"screenshot.png\"\r\n")
-                    .append("Content-Type: image/png\r\n\r\n");
-
-            try (OutputStream outputStream = connection.getOutputStream())
-            {
-                outputStream.write(payload.toString().getBytes());
-                outputStream.write(imageBytes);
-                outputStream.write(("\r\n--" + boundary + "--\r\n").getBytes());
-            }
-
-            connection.getResponseCode(); // Trigger request
-        }
-        catch (Exception e)
-        {
-            log.error("Failed to send screenshot to Discord", e);
-        }
-    }
-
-    public int getLastWidgetId()
-    {
-        return lastWidgetId;
+    private static String getPercentText(int current, int maximum) {
+        double percent = 100.0 * current / maximum;
+        return PERCENT_FORMAT.format(percent) + "%";
     }
 }
